@@ -1,6 +1,7 @@
 
 export type BootloaderScriptOptions = {
   compact?: boolean
+  loadOnInit?: boolean
 }
 
 const resolveCacheKey = (styleId: string, versionOrCacheKey: string): string => {
@@ -16,11 +17,26 @@ export const getBootloaderScript = (
 ) => {
   const styleIdValue = String(styleIdInput || '').trim() || 'fwkui'
   const cacheKeyValue = resolveCacheKey(styleIdValue, version)
+  const loadOnInitValue = options?.loadOnInit ?? true
   const styleId = JSON.stringify(styleIdValue)
   const cacheKey = JSON.stringify(cacheKeyValue)
+  const loadOnInit = JSON.stringify(loadOnInitValue)
 
   const script = `
 (async function () {
+  function canUseCacheRuntime() {
+    if (typeof window === 'undefined' || !window.localStorage) return false;
+    if (typeof navigator === 'undefined' || !navigator.locks || typeof navigator.locks.request !== 'function') return false;
+    try {
+      var probeKey = '__xcss_cache_probe__';
+      localStorage.setItem(probeKey, '1');
+      localStorage.removeItem(probeKey);
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function decompressLZW(compressed) {
     if (!compressed) return '';
     var dictionary = {};
@@ -103,6 +119,8 @@ export const getBootloaderScript = (
 
   try {
     if (typeof window === 'undefined' || !window.localStorage) return;
+    if (!${loadOnInit}) return;
+    if (!canUseCacheRuntime()) return;
 
     var styleId = ${styleId};
     var key = ${cacheKey};

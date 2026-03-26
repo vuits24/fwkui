@@ -22,6 +22,7 @@ export type XCSSConfig = {
         compression?: boolean
         debounceMs?: number
         sizeLast?: number
+        loadOnInit?: boolean
     }
 }
 
@@ -45,6 +46,7 @@ type XCSSCacheConfig = {
     compression: boolean
     debounceMs: number
     sizeLast: number
+    loadOnInit: boolean
 }
 
 type XCSSCacheEnvelopeLZW = {
@@ -63,6 +65,11 @@ type XCSSCacheEnvelopeStream = {
 
 type XCSSKeySyncPayload = {
     source: string
+    sizeLast: number
+    entries: [string, string][]
+}
+
+type XCSSKeyRegistry = {
     sizeLast: number
     entries: [string, string][]
 }
@@ -96,14 +103,98 @@ const resolveCacheConfig = (config?: XCSSConfig['cache']): XCSSCacheConfig => {
         typeof config?.sizeLast === 'number' && Number.isFinite(config.sizeLast) && config.sizeLast >= 0
             ? Math.floor(config.sizeLast)
             : 1000
+    const loadOnInit = config?.loadOnInit ?? true
 
-    return { styleId, version, compression, debounceMs, sizeLast }
+    return { styleId, version, compression, debounceMs, sizeLast, loadOnInit }
 }
 
 const createCacheKey = (cache: XCSSCacheConfig): string => `${cache.styleId}_cache_${cache.version}`
 // Key sync nhẹ cho cross-tab: delta sync cho key/value mới phát sinh.
 const createKeySyncKey = (cache: XCSSCacheConfig): string => `${cache.styleId}_ks_${cache.version}`
 const createKeySyncChannelName = (cache: XCSSCacheConfig): string => `${cache.styleId}_bc_${cache.version}`
+const createKeyRegistryKey = (cache: XCSSCacheConfig): string => `${cache.styleId}_kr_${cache.version}`
+const createKeyRegistryLockName = (cache: XCSSCacheConfig): string => `${cache.styleId}_kr_lock_${cache.version}`
+
+const readKeyRegistry = (storage: Storage | null, key: string): XCSSKeyRegistry => {
+    if (!storage) return { sizeLast: 0, entries: [] }
+
+    try {
+        const raw = storage.getItem(key)
+        if (!raw) return { sizeLast: 0, entries: [] }
+
+        const parsed = JSON.parse(raw) as {
+            sizeLast?: unknown
+            entries?: unknown
+            s?: unknown
+            e?: unknown
+        }
+
+        const sizeSource = typeof parsed.sizeLast === 'number'
+            ? parsed.sizeLast
+            : typeof parsed.s === 'number'
+                ? parsed.s
+                : 0
+
+        const entriesSource = Array.isArray(parsed.entries)
+            ? parsed.entries
+            : Array.isArray(parsed.e)
+                ? parsed.e
+                : []
+
+        const entries = entriesSource.filter((entry): entry is [string, string] => {
+            return (
+                Array.isArray(entry) &&
+                entry.length === 2 &&
+                typeof entry[0] === 'string' &&
+                typeof entry[1] === 'string'
+            )
+        })
+
+        return {
+            sizeLast: Number.isFinite(sizeSource) && sizeSource >= 0 ? Math.floor(sizeSource) : 0,
+            entries,
+        }
+    } catch (_error) {
+        return { sizeLast: 0, entries: [] }
+    }
+}
+
+const writeKeyRegistry = (storage: Storage | null, key: string, registry: XCSSKeyRegistry): void => {
+    if (!storage) return
+
+    try {
+        storage.setItem(
+            key,
+            JSON.stringify({
+                s: registry.sizeLast,
+                e: registry.entries,
+            }),
+        )
+    } catch (_error) {
+        // Bỏ qua lỗi ghi localStorage (quota, private mode, ...)
+    }
+}
+
+const canUseWritableLocalStorage = (): boolean => {
+    if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return false
+
+    try {
+        const key = '__xcss_cache_probe__'
+        window.localStorage.setItem(key, '1')
+        window.localStorage.removeItem(key)
+        return true
+    } catch (_error) {
+        return false
+    }
+}
+
+// Kiểm tra Web Locks API có khả dụng không
+const canUseWebLocks = (): boolean =>
+    typeof navigator !== 'undefined' &&
+    typeof navigator.locks !== 'undefined' &&
+    typeof navigator.locks.request === 'function'
+
+const canUseCacheRuntime = (): boolean => canUseWritableLocalStorage() && canUseWebLocks()
 
 
 const isCacheEnvelopeLZW = (value: unknown): value is XCSSCacheEnvelopeLZW => {
@@ -816,6 +907,19 @@ const unwrapCachedCssText = (mediaKey: string, text: string): string => {
     return text
 }
 
+const normalizeBaseCssText = (base?: string | string[] | null): string => {
+    if (Array.isArray(base)) return base.join('\n')
+    return base || ''
+}
+
+const mergeRootCssText = (baseText: string, cachedText: string): string => {
+    if (!baseText) return cachedText
+    if (!cachedText) return baseText
+    if (cachedText === baseText) return baseText
+    if (cachedText.startsWith(baseText)) return cachedText
+    return `${baseText}\n${cachedText}`
+}
+
 /**
  * Hàm factory chính để khởi tạo và cấu hình engine xcss.
  */
@@ -835,6 +939,7 @@ export const xcss = (
             compression: true,
             debounceMs: 1000,
             sizeLast: 1000,
+            loadOnInit: true,
         },
     },
 ) => {
@@ -978,16 +1083,34 @@ export const xcss = (
         const isBrowser = typeof window !== 'undefined' && typeof document !== 'undefined'
         const browserWindow = isBrowser ? window : null
         const browserStorage = browserWindow?.localStorage || null
+        const cacheSupported = isBrowser && canUseCacheRuntime()
+        const cacheEnabled = cacheConfig.loadOnInit && cacheSupported
+        const cacheStorage = cacheEnabled ? browserStorage : null
         let docRoot: Document | ShadowRoot | null = null
-        const hasBaseOverride = Array.isArray(cssDefault) ? cssDefault.length > 0 : !!cssDefault
+        const baseCssText = normalizeBaseCssText(cssDefault)
 
         if (doc) {
             docRoot = 'getRootNode' in doc ? (doc.getRootNode() as Document | ShadowRoot) : (doc as any)
         }
 
         const CSS_KEYS = new Map<string, string>();
+        const CSS_KEY_SOURCES = new Map<string, string>()
         const CSS_VALUES = new Set<string>(); // Set song song để check trùng O(1)
+
+        const registerCssKey = (source: string, value: string) => {
+            CSS_KEYS.set(source, value)
+            CSS_KEY_SOURCES.set(value, source)
+            CSS_VALUES.add(value)
+        }
+
+        const resolveSourceClassName = (value: string): string => CSS_KEY_SOURCES.get(value) || value
+        const keyRegistryKey = createKeyRegistryKey(cacheConfig)
+        const keyRegistryLockName = createKeyRegistryLockName(cacheConfig)
         let sizeLast = cacheConfig.sizeLast;
+        const pendingKeyAssignments = new Set<string>()
+        let keyAssignmentScheduled = false
+        let keyAssignmentInFlight: Promise<void> | null = null
+
         // Flag: lần render đầu tiên xử lý CSS đồng bộ để giảm CLS
         let isFirstRenderBatch = true;
         const syncSourceId = `xcss_${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`
@@ -1001,6 +1124,24 @@ export const xcss = (
             }
         }
 
+        const mergeKnownKeys = (entries?: [string, string][]) => {
+            if (!entries) return
+
+            entries.forEach(([source, value]) => {
+                const currentValue = CSS_KEYS.get(source)
+                if (currentValue === value) return
+                if (currentValue) return
+                if (CSS_VALUES.has(value) && CSS_KEY_SOURCES.get(value) !== source) return
+                registerCssKey(source, value)
+            })
+        }
+
+        if (cacheEnabled) {
+            const registry = readKeyRegistry(cacheStorage, keyRegistryKey)
+            mergeSizeLast(registry.sizeLast)
+            mergeKnownKeys(registry.entries)
+        }
+
         const mergeKeySyncPayload = (payload: XCSSKeySyncPayload | null) => {
             if (!payload) return
             if (payload.source && payload.source === syncSourceId) return
@@ -1011,8 +1152,7 @@ export const xcss = (
                 const currentValue = CSS_KEYS.get(key)
                 if (currentValue === value) return
                 if (currentValue || CSS_VALUES.has(value)) return
-                CSS_KEYS.set(key, value)
-                CSS_VALUES.add(value)
+                registerCssKey(key, value)
             })
         }
 
@@ -1035,17 +1175,17 @@ export const xcss = (
                 }
             }
 
-            if (!browserStorage) return
+            if (!cacheStorage) return
 
             try {
-                browserStorage.setItem(keySyncKey, JSON.stringify(payload))
+                cacheStorage.setItem(keySyncKey, JSON.stringify(payload))
             } catch (_error) {
                 // ignore key-sync write failure
             }
         }
 
         const scheduleKeySync = (entry: [string, string]) => {
-            if (!isBrowser) return
+            if (!isBrowser || !cacheEnabled) return
 
             pendingKeySyncEntries.push(entry)
             if (pendingKeySyncScheduled) return
@@ -1053,12 +1193,116 @@ export const xcss = (
             queueMicrotask(flushPendingKeySyncEntries)
         }
 
+        const allocateLocalKey = (source: string): string => {
+            let key: string
+            do {
+                key = 'D' + (sizeLast++).toString(32).toUpperCase()
+            } while (CSS_VALUES.has(key))
+
+            registerCssKey(source, key)
+            return key
+        }
+
+        const allocateKeyBatch = async (sources: string[]): Promise<void> => {
+            if (!cacheEnabled || !cacheStorage || sources.length === 0) return
+
+            const commit = (): [string, string][] => {
+                const registry = readKeyRegistry(cacheStorage, keyRegistryKey)
+                const registryMap = new Map<string, string>(registry.entries)
+                const registryValues = new Set<string>(registry.entries.map(([, value]) => value))
+
+                mergeSizeLast(registry.sizeLast)
+                mergeKnownKeys(registry.entries)
+
+                let nextSizeLast = Math.max(sizeLast, registry.sizeLast, cacheConfig.sizeLast)
+                const newEntries: [string, string][] = []
+
+                sources.forEach((source) => {
+                    if (CSS_KEYS.has(source)) return
+
+                    const existing = registryMap.get(source)
+                    if (existing) {
+                        registerCssKey(source, existing)
+                        return
+                    }
+
+                    let key: string
+                    do {
+                        key = 'D' + (nextSizeLast++).toString(32).toUpperCase()
+                    } while (registryValues.has(key) || CSS_VALUES.has(key))
+
+                    registryMap.set(source, key)
+                    registryValues.add(key)
+                    newEntries.push([source, key])
+                    registerCssKey(source, key)
+                })
+
+                mergeSizeLast(nextSizeLast)
+
+                if (newEntries.length === 0) return []
+
+                writeKeyRegistry(cacheStorage, keyRegistryKey, {
+                    sizeLast: nextSizeLast,
+                    entries: [...registry.entries, ...newEntries],
+                })
+
+                return newEntries
+            }
+
+            let assignedEntries: [string, string][] = []
+            if (canUseWebLocks()) {
+                try {
+                    await navigator.locks.request(keyRegistryLockName, async () => {
+                        assignedEntries = commit()
+                    })
+                } catch (_error) {
+                    assignedEntries = commit()
+                }
+            } else {
+                assignedEntries = commit()
+            }
+
+            if (assignedEntries.length === 0) return
+
+            assignedEntries.forEach((entry) => scheduleKeySync(entry))
+            processObservedItems(assignedEntries.map(([source]) => source))
+            triggerSave()
+        }
+
+        const runPendingKeyAssignments = async (): Promise<void> => {
+            if (!cacheEnabled || !isBrowser) return
+            if (keyAssignmentInFlight) return keyAssignmentInFlight
+
+            keyAssignmentInFlight = (async () => {
+                while (pendingKeyAssignments.size > 0) {
+                    const batch = Array.from(pendingKeyAssignments)
+                    pendingKeyAssignments.clear()
+                    await allocateKeyBatch(batch)
+                }
+            })().finally(() => {
+                keyAssignmentInFlight = null
+            })
+
+            return keyAssignmentInFlight
+        }
+
+        const scheduleKeyAssignment = (source: string) => {
+            if (!cacheEnabled || !isBrowser) return
+            pendingKeyAssignments.add(source)
+            if (keyAssignmentScheduled) return
+            keyAssignmentScheduled = true
+            queueMicrotask(() => {
+                keyAssignmentScheduled = false
+                void runPendingKeyAssignments()
+            })
+        }
+
         // Setup layers if in browser
         if (isBrowser && docRoot) {
             setupCssLayers(docRoot, cacheConfig.styleId)
         }
 
-        if (isBrowser && typeof BroadcastChannel !== 'undefined') {
+        if (cacheEnabled && isBrowser && typeof BroadcastChannel !== 'undefined') {
             try {
                 keySyncBroadcastChannel = new BroadcastChannel(keySyncChannelName)
                 keySyncBroadcastChannel.addEventListener('message', (event: MessageEvent) => {
@@ -1112,7 +1356,7 @@ export const xcss = (
 
         const writeCache = (value: string) => {
             try {
-                browserStorage?.setItem(cacheKey, value)
+                cacheStorage?.setItem(cacheKey, value)
             } catch (e) {
                 console.warn('XCSS: Failed to save cache', e)
             }
@@ -1120,19 +1364,19 @@ export const xcss = (
 
 
         const removeCacheIfUnchanged = (expectedRaw?: string) => {
-            if (!isBrowser || !browserStorage) return
+            if (!isBrowser || !cacheStorage) return
 
             if (typeof expectedRaw === 'string') {
-                const currentRaw = browserStorage.getItem(cacheKey)
+                const currentRaw = cacheStorage.getItem(cacheKey)
                 if (currentRaw !== expectedRaw) return
             }
 
-            browserStorage.removeItem(cacheKey)
-            browserStorage.removeItem(keySyncKey)
+            cacheStorage.removeItem(cacheKey)
+            cacheStorage.removeItem(keySyncKey)
         }
 
         const saveCache = (data: XCSSCacheData) => {
-            if (!isBrowser || !browserStorage) return
+            if (!cacheEnabled || !isBrowser || !cacheStorage) return
             lastKnownCacheData = data
             const ticket = ++latestSaveTicket
             try {
@@ -1179,7 +1423,7 @@ export const xcss = (
         }
 
         const triggerSave = () => {
-            if (!isBrowser) return
+            if (!isBrowser || !cacheEnabled) return
             if (debounceTimer) clearTimeout(debounceTimer)
             debounceTimer = setTimeout(() => {
                 const rulesSetObj: Record<string, string[]> = {}
@@ -1215,9 +1459,9 @@ export const xcss = (
         }
 
         // Tải cache (đồng bộ) — chỉ sử dụng 1 key duy nhất
-        if (isBrowser && browserStorage) {
+        if (cacheEnabled && isBrowser && cacheStorage) {
             try {
-                const raw = browserStorage.getItem(cacheKey)
+                const raw = cacheStorage.getItem(cacheKey)
                 if (raw) {
                     const data = parseCacheDataSync(raw)
                     if (!data) {
@@ -1225,26 +1469,14 @@ export const xcss = (
                         if (isStreamCacheEnvelopeRaw(raw)) {
                             asyncCacheCandidate = { raw }
                         } else {
-                            browserStorage.removeItem(cacheKey)
+                            cacheStorage.removeItem(cacheKey)
                         }
                     } else if (data.configHash !== currentConfigHash) {
                         // Config đã thay đổi, xóa cache cũ
-                        browserStorage.removeItem(cacheKey)
+                        cacheStorage.removeItem(cacheKey)
                     } else {
                         loadedCacheData = data
                         cacheLoaded = true
-
-                        // Khôi phục CSS_KEYS
-                        if (data.keys) {
-                            data.keys.forEach(([k, v]) => { CSS_KEYS.set(k, v); CSS_VALUES.add(v) })
-                        }
-                        mergeSizeLast(data.sizeLast)
-                        // Khôi phục cssText (unwrap cho sử dụng nội bộ)
-                        if (data.cssText) {
-                            for (const k in data.cssText) {
-                                cssStyleSheetsText[k] = unwrapCachedCssText(k, data.cssText[k])
-                            }
-                        }
                         lastKnownCacheData = data
                     }
                 }
@@ -1256,19 +1488,25 @@ export const xcss = (
             cssStyleSheetsDom['root'] = new CSSStyleSheet()
         }
 
+        const applySheetText = (mediaKey: string, text: string) => {
+            cssStyleSheetsText[mediaKey] = text
+            if (isBrowser && cssStyleSheetsDom[mediaKey]) {
+                cssStyleSheetsDom[mediaKey].replaceSync(text)
+            }
+        }
+
         keysCssStyleSheetsDom.forEach((k) => {
             cssStyleSheetsSet[k] = new Set()
             if (isBrowser) {
                 const media = mqDf.find((m) => Object.keys(m)[0] == k)?.[k] || ''
                 cssStyleSheetsDom[k] = new CSSStyleSheet({ media })
             }
-            // If NOT loaded from cache, ensure empty.
-            if (!cacheLoaded) {
-                cssStyleSheetsText[k] = ''
-            }
+            cssStyleSheetsText[k] = ''
             cssStyleSheetsPending[k] = []
             cssStyleSheetsPendingScheduled[k] = false
         })
+
+        applySheetText('root', baseCssText)
 
         // Xóa bootloader style SAU khi adoptedStyleSheets đã paint xong
         // Dùng double requestAnimationFrame để đảm bảo trình duyệt đã render CSS mới
@@ -1286,48 +1524,39 @@ export const xcss = (
 
         const hydrateCacheAfterInit = (data: XCSSCacheData) => {
             if (data.keys) {
-                data.keys.forEach(([k, v]) => { CSS_KEYS.set(k, v); CSS_VALUES.add(v) })
+                mergeKnownKeys(data.keys)
             }
             mergeSizeLast(data.sizeLast)
 
-            if (data.cssText) {
-                for (const k in data.cssText) {
-                    if (k === 'root' && hasBaseOverride) continue
+            const sheetKeys = ['root', ...keysCssStyleSheetsDom]
+            sheetKeys.forEach((key) => {
+                const currentRules = cssStyleSheetsSet[key] || new Set<string>()
+                const cachedRules = data.rulesSet?.[key] || []
+                const mergedRules = new Set<string>([...cachedRules, ...Array.from(currentRules)])
+                cssStyleSheetsSet[key] = mergedRules
 
-                    const txt = unwrapCachedCssText(k, data.cssText[k])
-                    cssStyleSheetsText[k] = txt
-                    if (isBrowser && cssStyleSheetsDom[k]) {
-                        cssStyleSheetsDom[k].replaceSync(txt)
-                    }
+                if (key === 'root') {
+                    const cachedRoot = typeof data.cssText?.root === 'string' ? data.cssText.root : ''
+                    const txt = mergeRootCssText(baseCssText, cachedRoot)
+                    applySheetText('root', txt)
+                    return
                 }
-            }
 
-            if (data.rulesSet) {
-                for (const k in data.rulesSet) {
-                    if (!cssStyleSheetsSet[k]) cssStyleSheetsSet[k] = new Set()
-                    data.rulesSet[k].forEach(r => cssStyleSheetsSet[k].add(r))
-                }
-            }
+                const textFromRules = Array.from(mergedRules).join('\n')
+                const fallbackText =
+                    typeof data.cssText?.[key] === 'string'
+                        ? unwrapCachedCssText(key, data.cssText[key])
+                        : ''
+                applySheetText(key, textFromRules || fallbackText)
+            })
 
             lastKnownCacheData = data
             removeBootloaderStyle()
         }
 
-        // Post-Init Hydration: Populate from sync cache
+        // Post-Init Hydration: áp dụng dữ liệu cache vào DOM/stylesheet
         if (cacheLoaded && loadedCacheData) {
             hydrateCacheAfterInit(loadedCacheData)
-        }
-
-        if (cssDefault && Array.isArray(cssDefault)) {
-            cssStyleSheetsText.root = cssDefault.join('\n')
-            if (isBrowser && cssStyleSheetsDom.root) {
-                cssStyleSheetsDom.root.replaceSync(cssStyleSheetsText.root)
-            }
-        } else {
-            cssStyleSheetsText.root = (cssDefault as string) || ''
-            if (isBrowser && cssStyleSheetsDom.root) {
-                cssStyleSheetsDom.root.replaceSync(cssStyleSheetsText.root)
-            }
         }
 
         // Gắn tất cả sheets MỘT LẦN DUY NHẤT (batch) để tránh multi-reflow gây CLS
@@ -1341,8 +1570,12 @@ export const xcss = (
             }
         }
 
+        if (!cacheEnabled) {
+            removeBootloaderStyle()
+        }
+
         // Xử lý bất đồng bộ cho cache stream-compressed
-        if (isBrowser && browserStorage && asyncCacheCandidate && !cacheLoaded) {
+        if (cacheEnabled && isBrowser && cacheStorage && asyncCacheCandidate && !cacheLoaded) {
             void (async () => {
                 const data = await parseCacheDataAsync(asyncCacheCandidate!.raw)
                 if (!data) {
@@ -1360,7 +1593,7 @@ export const xcss = (
         }
 
         // Đồng bộ key generation từ tab khác: ưu tiên BroadcastChannel, fallback storage.
-        if (isBrowser && browserWindow?.addEventListener) {
+        if (cacheEnabled && isBrowser && browserWindow?.addEventListener) {
             browserWindow.addEventListener('storage', (e) => {
                 if (e.key === keySyncKey && e.newValue) {
                     try {
@@ -1370,15 +1603,27 @@ export const xcss = (
             })
         }
 
+        // Chèn 1 rule vào CSSStyleSheet — O(1), không parse lại toàn bộ.
+        // Fallback về replaceSync nếu insertRule thất bại.
+        const safeInsertRule = (sheet: CSSStyleSheet, rule: string, cssText: string): void => {
+            try {
+                sheet.insertRule(rule, sheet.cssRules.length)
+            } catch (_e) {
+                // insertRule thất bại (rule không hợp lệ, etc.) → fallback replaceSync
+                try {
+                    sheet.replaceSync(cssText)
+                } catch (_e2) {
+                    // Bỏ qua nếu cả hai đều thất bại
+                }
+            }
+        }
+
         const updateRules = (txtCls: string, d: any) => {
             let { media, property, selector, layer, className } = d
 
             let cssTextStore = cssStyleSheetsText
-            let cssPending = cssStyleSheetsPending
-            let cssPendingScheduled = cssStyleSheetsPendingScheduled
 
             layer = Number(layer) || 0
-            // let classNameStr2 = className
             let cssExts = CSS_KEYS.get(txtCls)
             let cssName = cssExts
                 ? `.${cssExts}${selector}`
@@ -1387,7 +1632,6 @@ export const xcss = (
             var txtCss = `@layer l${layer}{${cssName}{${property}}}`
 
             if (!cssStyleSheetsSet[media]) {
-                // Fallback or init if missing
                 cssStyleSheetsSet[media] = new Set()
             }
 
@@ -1396,55 +1640,29 @@ export const xcss = (
             if (!cssStyleSheetSet.has(txtCss)) {
                 cssStyleSheetSet.add(txtCss)
 
-                // Add valid media/pending arrays if missed
-                if (!cssPending[media]) cssPending[media] = []
+                // Cập nhật text store cho cache persistence
+                cssTextStore[media] += (cssTextStore[media] ? '\n' : '') + txtCss
 
-                cssPending[media].push(txtCss)
-
-                // If not in browser, we can just sync immediately or keep it pending
-                // But for SSR extraction, we want it in cssTextStore
                 if (!isBrowser) {
-                    const pending = cssPending[media]
-                    if (pending.length > 0) {
-                        cssTextStore[media] += (cssTextStore[media] ? '\n' : '') + pending.join('\n')
-                        cssPending[media] = []
-                    }
-                } else if (isFirstRenderBatch) {
-                    // First paint: flush CSS đồng bộ để tránh CLS
-                    const pending = cssPending[media]
-                    if (pending.length > 0) {
-                        cssTextStore[media] += (cssTextStore[media] ? '\n' : '') + pending.join('\n')
-                        if (cssStyleSheetsDom[media]) {
-                            cssStyleSheetsDom[media].replaceSync(cssTextStore[media])
-                        }
-                        cssPending[media] = []
-                    }
-                } else {
-                    if (!cssPendingScheduled[media]) {
-                        cssPendingScheduled[media] = true
-                        queueMicrotask(() => {
-                            const pending = cssPending[media]
-                            const sheet = cssStyleSheetsDom[media]
-                            if (pending.length > 0) {
-                                cssTextStore[media] +=
-                                    (cssTextStore[media] ? '\n' : '') + pending.join('\n')
-                                if (sheet) {
-                                    sheet.replaceSync(cssTextStore[media])
-                                }
-                                cssPending[media] = []
-                                triggerSave() // TRIGGER SAVE CACHE
-                            }
-                            cssPendingScheduled[media] = false
-                        })
-                    }
+                    // SSR: chỉ cập nhật text store (đã làm ở trên)
+                } else if (cssStyleSheetsDom[media]) {
+                    // Browser: dùng insertRule O(1) — nhanh hơn replaceSync O(n)
+                    safeInsertRule(
+                        cssStyleSheetsDom[media],
+                        txtCss,
+                        cssTextStore[media]
+                    )
                 }
+
+                triggerSave()
             }
         }
 
         const applyObservedItems = (items: string[]) => {
             items.forEach((cls) => {
-                let item = classToProp(cls)
-                item && updateRules(cls, item)
+                const sourceClassName = resolveSourceClassName(cls)
+                let item = classToProp(sourceClassName)
+                item && updateRules(sourceClassName, item)
             })
         }
 
@@ -1500,18 +1718,17 @@ export const xcss = (
                 if (CSS_KEYS.has(l)) {
                     item = CSS_KEYS.get(l)!
                 } else {
-                    // Only hash class names that can actually generate valid CSS.
-                    // Invalid/unsupported tokens (e.g. "bs-a") must stay raw.
+                    // Chỉ hash class name nếu có thể sinh CSS hợp lệ.
+                    // Token không hợp lệ (ví dụ "bs-a") giữ nguyên.
                     if (shouldHashClass(l)) {
-                        let key: string
-                        do {
-                            key = 'D' + (sizeLast++).toString(32).toUpperCase()
-                        } while (CSS_VALUES.has(key))
-                        CSS_KEYS.set(l, key)
-                        CSS_VALUES.add(key)
-                        scheduleKeySync([l, key])
-                        item = key
-                        triggerSave() // LƯU CACHE
+                        if (cacheEnabled && isBrowser) {
+                            scheduleKeyAssignment(l)
+                        } else {
+                            const key = allocateLocalKey(l)
+                            scheduleKeySync([l, key])
+                            triggerSave() // LƯU CACHE
+                            item = key
+                        }
                     }
                 }
 
@@ -1972,7 +2189,7 @@ export const xcss = (
 
     // API công khai để xuất cache cho build thủ công
     const exportCache = () => {
-        if (typeof window === 'undefined' || !window.localStorage) return lastKnownCacheData
+        if (!cacheConfig.loadOnInit || typeof window === 'undefined' || !window.localStorage) return lastKnownCacheData
         const data = parseCacheDataSync(window.localStorage.getItem(cacheKey))
         return data || lastKnownCacheData
     }

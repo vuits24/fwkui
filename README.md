@@ -263,7 +263,8 @@ export const fx = createSharedInstance({
     styleId: 'fwkui',
     version: 'v1',
     compression: true,
-    debounceMs: 1000
+    debounceMs: 1000,
+    loadOnInit: true
   }
 });
 
@@ -314,7 +315,8 @@ xcss.cssObserve(document, {
     styleId: 'fwkui',
     version: 'v1',
     compression: true,
-    debounceMs: 1000
+    debounceMs: 1000,
+    loadOnInit: true
   }
 });
 ```
@@ -473,8 +475,11 @@ import { getBootloaderScript } from '@fwkui/x-css';
 const styleId = 'fwkui';
 const version = 'v1';
 
-const bootloaderScript = getBootloaderScript(styleId, version);
-const bootloaderScriptCompact = getBootloaderScript(styleId, version, { compact: true });
+const bootloaderScript = getBootloaderScript(styleId, version, { loadOnInit: true });
+const bootloaderScriptCompact = getBootloaderScript(styleId, version, {
+  compact: true,
+  loadOnInit: true
+});
 ```
 
 ### Cấu trúc chèn vào `<head>` (khuyến nghị)
@@ -483,7 +488,7 @@ const bootloaderScriptCompact = getBootloaderScript(styleId, version, { compact:
 <head>
   <!-- 1) Bootloader từ cache: chạy sớm nhất để giảm FOUC -->
   <script>
-    /* nội dung từ getBootloaderScript(styleId, version) */
+    /* nội dung từ getBootloaderScript(styleId, version, { loadOnInit: true }) */
   </script>
 
   <!-- 2) Bundle/module của app -->
@@ -510,7 +515,10 @@ import { getBootloaderScript } from '@fwkui/x-css';
 
 const styleId = 'fwkui';
 const version = 'v1';
-const bootloaderScript = getBootloaderScript(styleId, version, { compact: true });
+const bootloaderScript = getBootloaderScript(styleId, version, {
+  compact: true,
+  loadOnInit: true
+});
 
 const html = `
 <!doctype html>
@@ -528,8 +536,10 @@ Lưu ý:
 1. Đồng bộ `styleId` + `version` giữa bootloader và cấu hình `xcss.css(...)`.
 2. Script tạo từ `getBootloaderScript` ưu tiên `DecompressionStream` (cache deflate-raw) và fallback LZW.
 3. Sau bootloader vẫn cần gọi `xcss.cssObserve(...)` như bình thường.
-4. Dùng `{ compact: true }` khi muốn script trả về ở dạng nén gọn để nhúng HTML.
+4. Mặc định `loadOnInit` đang bật; muốn tắt hẳn load/save cache thì truyền `{ loadOnInit: false }`.
+5. Dùng `{ compact: true }` khi muốn script trả về ở dạng nén gọn để nhúng HTML.
 6. Nếu dữ liệu cache dưới key hiện tại bị lỗi/không decode được, engine sẽ tự xóa key đó để lần chạy sau lưu lại dữ liệu mới.
+7. Cache runtime chỉ khởi tạo khi browser dùng được cả `localStorage` writable và `Web Locks`; thiếu một trong hai thì engine/bootloader sẽ bỏ qua load-save cache.
 
 ### Khi nào nên dùng `getBootloaderScript`
 
