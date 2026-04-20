@@ -16,3 +16,4 @@ package-lock.json
 .idea
 *.log
 test-multitab.html
+git-env.sh
