@@ -150,5 +150,7 @@ export const setClsxRoot = shared.setClsxRoot
 export const getCss = shared.getCss
 export const ready = shared.ready
 export { getBootloaderScript }
+export * from './tailwind'
+export * from './tailwind-readiness'
 export default $$
 export type { XCSSConfig, BootloaderScriptOptions }

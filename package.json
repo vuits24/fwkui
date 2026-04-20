@@ -1,6 +1,6 @@
 {
   "name": "@fwkui/x-css",
-  "version": "1.0.22",
+  "version": "1.0.23",
   "description": "A fast, modular CSS-in-JS library with utility-first approach and static extraction support.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -9,8 +9,6 @@
     "dist",
     "README.md",
     "DICTIONARY.md",
-    "ROADMAP.md",
-    ".cursorrules",
     "LICENSE"
   ],
   "scripts": {

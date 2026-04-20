@@ -103,7 +103,7 @@ const resolveCacheConfig = (config?: XCSSConfig['cache']): XCSSCacheConfig => {
         typeof config?.sizeLast === 'number' && Number.isFinite(config.sizeLast) && config.sizeLast >= 0
             ? Math.floor(config.sizeLast)
             : 1000
-    const loadOnInit = config?.loadOnInit ?? true
+    const loadOnInit = config?.loadOnInit ?? false
 
     return { styleId, version, compression, debounceMs, sizeLast, loadOnInit }
 }
@@ -194,7 +194,7 @@ const canUseWebLocks = (): boolean =>
     typeof navigator.locks !== 'undefined' &&
     typeof navigator.locks.request === 'function'
 
-const canUseCacheRuntime = (): boolean => canUseWritableLocalStorage() && canUseWebLocks()
+const canUseCacheRuntime = (): boolean => canUseWritableLocalStorage()
 
 
 const isCacheEnvelopeLZW = (value: unknown): value is XCSSCacheEnvelopeLZW => {
@@ -939,7 +939,7 @@ export const xcss = (
             compression: true,
             debounceMs: 1000,
             sizeLast: 1000,
-            loadOnInit: true,
+            loadOnInit: false,
         },
     },
 ) => {
@@ -1200,6 +1200,47 @@ export const xcss = (
             } while (CSS_VALUES.has(key))
 
             registerCssKey(source, key)
+            return key
+        }
+
+        const allocatePersistentKeySync = (source: string): string => {
+            const current = CSS_KEYS.get(source)
+            if (current) return current
+
+            if (!cacheEnabled || !cacheStorage) {
+                return allocateLocalKey(source)
+            }
+
+            const registry = readKeyRegistry(cacheStorage, keyRegistryKey)
+            const registryMap = new Map<string, string>(registry.entries)
+            const registryValues = new Set<string>(registry.entries.map(([, value]) => value))
+
+            mergeSizeLast(registry.sizeLast)
+            mergeKnownKeys(registry.entries)
+
+            const existing = registryMap.get(source)
+            if (existing) {
+                registerCssKey(source, existing)
+                return existing
+            }
+
+            let nextSizeLast = Math.max(sizeLast, registry.sizeLast, cacheConfig.sizeLast)
+            let key: string
+            do {
+                key = 'D' + (nextSizeLast++).toString(32).toUpperCase()
+            } while (registryValues.has(key) || CSS_VALUES.has(key))
+
+            registryMap.set(source, key)
+            registryValues.add(key)
+            registerCssKey(source, key)
+            mergeSizeLast(nextSizeLast)
+
+            writeKeyRegistry(cacheStorage, keyRegistryKey, {
+                sizeLast: nextSizeLast,
+                entries: [...registry.entries, [source, key]],
+            })
+
+            scheduleKeySync([source, key])
             return key
         }
 
@@ -1514,8 +1555,13 @@ export const xcss = (
             if (!docRoot) return
             const blStyle = docRoot.querySelector(`style[id="${cacheConfig.styleId}"]`)
             if (blStyle) {
-                requestAnimationFrame(() => {
-                    requestAnimationFrame(() => {
+                const scheduleNextPaint =
+                    typeof requestAnimationFrame === 'function'
+                        ? requestAnimationFrame
+                        : (callback: (time: number) => void) => setTimeout(() => callback(Date.now()), 0)
+
+                scheduleNextPaint(() => {
+                    scheduleNextPaint(() => {
                         blStyle.remove()
                     })
                 })
@@ -1722,7 +1768,7 @@ export const xcss = (
                     // Token không hợp lệ (ví dụ "bs-a") giữ nguyên.
                     if (shouldHashClass(l)) {
                         if (cacheEnabled && isBrowser) {
-                            scheduleKeyAssignment(l)
+                            item = allocatePersistentKeySync(l)
                         } else {
                             const key = allocateLocalKey(l)
                             scheduleKeySync([l, key])

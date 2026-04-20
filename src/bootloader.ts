@@ -17,7 +17,7 @@ export const getBootloaderScript = (
 ) => {
   const styleIdValue = String(styleIdInput || '').trim() || 'fwkui'
   const cacheKeyValue = resolveCacheKey(styleIdValue, version)
-  const loadOnInitValue = options?.loadOnInit ?? true
+  const loadOnInitValue = options?.loadOnInit ?? false
   const styleId = JSON.stringify(styleIdValue)
   const cacheKey = JSON.stringify(cacheKeyValue)
   const loadOnInit = JSON.stringify(loadOnInitValue)
@@ -26,7 +26,6 @@ export const getBootloaderScript = (
 (async function () {
   function canUseCacheRuntime() {
     if (typeof window === 'undefined' || !window.localStorage) return false;
-    if (typeof navigator === 'undefined' || !navigator.locks || typeof navigator.locks.request !== 'function') return false;
     try {
       var probeKey = '__xcss_cache_probe__';
       localStorage.setItem(probeKey, '1');

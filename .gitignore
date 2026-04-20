@@ -8,6 +8,8 @@ dic.js
 coverage
 output
 tests
+!tests/
+!tests/*.test.ts
 package-lock.json
 .gitignore
 .env

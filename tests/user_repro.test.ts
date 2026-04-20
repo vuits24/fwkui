@@ -537,6 +537,20 @@ afterEach(() => {
 })
 
 describe('xcss cache', () => {
+    it('should keep cache disabled by default unless loadOnInit is enabled explicitly', async () => {
+        currentEnv = createFakeBrowserEnv()
+
+        const instance = xcss()
+        const { clsx } = instance.buildCss(currentEnv.document)
+
+        clsx('m10px')
+        await instance.ready
+        await Promise.resolve()
+        await wait(30)
+
+        expect(currentEnv.localStorage.getItem('fwkui_cache_v1')).toBeNull()
+    })
+
     it('should remove invalid cache content for the same key', async () => {
         currentEnv = createFakeBrowserEnv()
 
@@ -549,6 +563,7 @@ describe('xcss cache', () => {
                 version: 'v1',
                 compression: true,
                 debounceMs: 0,
+                loadOnInit: true,
             },
         })
 
@@ -568,6 +583,7 @@ describe('xcss cache', () => {
                 version: 'v9',
                 compression: true,
                 debounceMs: 0,
+                loadOnInit: true,
             },
         })
         const { clsx } = instance.buildCss(currentEnv.document)
@@ -616,6 +632,7 @@ describe('xcss cache', () => {
                 version: 'v1',
                 compression: true,
                 debounceMs: 0,
+                loadOnInit: true,
             },
         })
 
@@ -636,6 +653,7 @@ describe('xcss cache', () => {
         const script = getBootloaderScript('xcss-style', 'v9')
         expect(script).toContain('"xcss-style"')
         expect(script).toContain('"xcss-style_cache_v9"')
+        expect(script).toContain('if (!false) return;')
     })
 
     it('should build bootloader script from styleId + version with different versions', () => {
@@ -652,6 +670,11 @@ describe('xcss cache', () => {
         expect(compact.includes('\n')).toBe(false)
     })
 
+    it('should allow bootloader only when loadOnInit is enabled explicitly', () => {
+        const script = getBootloaderScript('xcss-style', 'v9', { loadOnInit: true })
+        expect(script).toContain('if (!true) return;')
+    })
+
     it('should honor configured cache.sizeLast seed for generated keys', async () => {
         currentEnv = createFakeBrowserEnv()
 
@@ -661,6 +684,7 @@ describe('xcss cache', () => {
                 version: 'v1',
                 sizeLast: 2048,
                 debounceMs: 0,
+                loadOnInit: true,
             },
         })
         const { clsx } = instance.buildCss(currentEnv.document)
@@ -685,6 +709,7 @@ describe('xcss cache', () => {
                 sizeLast: 2048,
                 compression: false,
                 debounceMs: 0,
+                loadOnInit: true,
             },
         }
 

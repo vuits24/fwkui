@@ -252,27 +252,22 @@ export function Button({ primary, children }) {
 
 ## Shared Instance (Khởi Tạo Một Lần)
 
-Nếu bạn muốn tái sử dụng cùng một instance (giữ mapping key ổn định), dùng factory:
+Nếu bạn muốn tái sử dụng cùng một instance, dùng factory.
+Khuyến nghị mặc định cho app chạy thật:
+1. Không đặt `prefix`.
+2. Không bật `cache`.
+3. Chỉ bật `cache` hoặc `prefix` khi bạn chủ động chấp nhận tradeoff vận hành.
 
 ```ts
 import { createSharedInstance } from '@fwkui/x-css';
 
-export const fx = createSharedInstance({
-  prefix: 'fk-',
-  cache: {
-    styleId: 'fwkui',
-    version: 'v1',
-    compression: true,
-    debounceMs: 1000,
-    loadOnInit: true
-  }
-});
+export const fx = createSharedInstance();
 
 // Browser: gọi 1 lần khi app khởi động
 fx.observe(document);
 
 // Dùng ở mọi nơi
-const className = fx.clsx('fk-dF fk-aiC fk-jcC fk-p10px;16px');
+const className = fx.clsx('dF aiC jcC p10px;16px');
 
 // Nếu dictionaryImport là true/string và cần chắc chắn CSS đã sẵn sàng:
 await fx.ready();
@@ -281,17 +276,225 @@ await fx.ready();
 const cssText = fx.getCss();
 ```
 
+## Tailwind Migration Helper
+
+`@fwkui/x-css` có helper bán tự động để hỗ trợ migration từ chuỗi utility Tailwind sang token `x-css`.
+
+Public API:
+
+```ts
+import {
+  assessTailwindMigrationReadiness,
+  classifyTailwindToken,
+  convertTailwindClasses,
+  convertTailwindToken,
+  getTailwindCoverageMatrix
+} from '@fwkui/x-css';
+
+const result = convertTailwindClasses(
+  'flex items-center justify-between gap-4 p-4 bg-white text-slate-900 rounded-lg border border-slate-200'
+);
+
+console.log(result.output);
+// dF ai[center] jc[space-between] gap16px p16px bgc#ffffff c#0f172a bdra8px bdw1px bds[solid] bdcCurrentColor bdc#e2e8f0
+
+console.log(classifyTailwindToken('md:fxd[row]'));
+// 'xcss'
+
+const readiness = assessTailwindMigrationReadiness(
+  'transition flex group-hover:bg-slate-50 md:fxd[row]'
+);
+
+console.log(readiness.releaseDecision);
+// 'blocked'
+
+console.log(readiness.autoApplyOutput);
+// dF md:fxd[row]
+```
+
+Contract hiện tại:
+1. Helper ưu tiên các utility Tailwind phổ biến cho layout, spacing, color, typography, border, shadow, width/height.
+2. Responsive/state variants phổ biến như `sm:`, `md:`, `hover:`, `focus:` được chuyển sang format `x-css`.
+3. Token đầu vào được phân loại thành `tailwind`, `xcss`, `ambiguous`, hoặc `unknown`.
+4. Đây là migration helper, không phải promise “convert 100% Tailwind không cần review”.
+5. Khi publish hoặc migrate codebase thật, nên ưu tiên `mode: 'safe'` thay vì `legacy`.
+6. Helper này làm việc trên raw utility string và bỏ qua config `prefix`; khi migrate Tailwind, nên coi `prefix` là rỗng.
+
+Ví dụ:
+
+```ts
+const converted = convertTailwindToken('md:hover:bg-slate-50');
+
+console.log(converted.outputs);
+// ['md:bgc#f8fafc@:hover']
+
+const safe = convertTailwindClasses('md:fxd[row] p-2.5', { mode: 'safe' });
+console.log(safe.passthrough); // ['md:fxd[row]']
+console.log(safe.converted);   // ['p10px']
+console.log(safe.ambiguous);   // ['p-2.5']
+```
+
+### Mode
+
+`convertTailwindToken()` và `convertTailwindClasses()` nhận option:
+
+```ts
+type TailwindConversionMode = 'legacy' | 'safe' | 'strict'
+```
+
+Ý nghĩa:
+1. `legacy`:
+   giữ hành vi tương thích cũ.
+   Token không convert được có thể được passthrough nếu `preserveUnknown !== false`.
+2. `safe`:
+   chỉ passthrough token đã được xác nhận là `x-css`.
+   Token `ambiguous` hoặc `unknown` sẽ không được giữ nguyên mù.
+3. `strict`:
+   dùng cùng `preserveUnknown: false` để ép toàn bộ token không chắc chắn đi vào `unsupported`.
+   Đây là mode phù hợp cho codemod, CI, hoặc review trước khi deploy.
+
+Ví dụ khuyến nghị:
+
+```ts
+const result = convertTailwindClasses(source, {
+  mode: 'safe',
+  preserveUnknown: false
+});
+```
+
+### Kết Quả Trả Về
+
+`convertTailwindToken()` trả:
+
+```ts
+{
+  input: string
+  outputs: string[]
+  status: 'converted' | 'passthrough' | 'unsupported'
+  classification: 'tailwind' | 'xcss' | 'ambiguous' | 'unknown'
+  exact: boolean
+  warnings: Array<{ token: string; message: string }>
+}
+```
+
+`convertTailwindClasses()` trả:
+
+```ts
+{
+  input: string
+  output: string
+  details: TailwindTokenConversion[]
+  converted: string[]
+  passthrough: string[]
+  unsupported: string[]
+  ambiguous: string[]
+  warnings: TailwindConversionWarning[]
+}
+```
+
+Ý nghĩa thực tế:
+1. `converted`: token đã map sang `x-css`.
+2. `passthrough`: token được giữ nguyên vì là `x-css` thật, hoặc vì caller vẫn bật giữ token gốc.
+3. `unsupported`: token chưa có mapping an toàn.
+4. `ambiguous`: token có hình thức dễ nhầm giữa Tailwind và `x-css`, cần review.
+
+### Readiness API Cho Sản Phẩm Thật
+
+Nếu dùng framework này để migrate code chạy production, không nên dùng mỗi `convertTailwindClasses()` làm quyết định release.
+Hãy chạy preflight bằng `assessTailwindMigrationReadiness()`:
+
+```ts
+const report = assessTailwindMigrationReadiness(source);
+
+if (report.releaseDecision === 'safe') {
+  // Chỉ còn exact conversion hoặc x-css thật
+  apply(report.autoApplyOutput);
+}
+
+if (report.releaseDecision === 'review') {
+  // Có output gần đúng như `transition -> tran0.2s`
+  review(report.approximateConverted);
+}
+
+if (report.releaseDecision === 'blocked') {
+  // Có utility không an toàn để tự động migrate
+  fail(report.blocked);
+}
+```
+
+Contract của report:
+1. `autoApplyOutput`: chỉ chứa token exact-converted và token `x-css` thật, theo đúng thứ tự gốc.
+2. `approximateConverted`: token đã convert nhưng không đủ an toàn để áp thẳng production.
+3. `reviewRequired`: tất cả token cần con người xem lại.
+4. `blocked`: token không nên auto-apply trong flow migration thật.
+5. `safeToAutoApply`: chỉ `true` khi không còn token phải review.
+
+Coverage machine-readable:
+
+```ts
+const matrix = getTailwindCoverageMatrix();
+```
+
+`matrix` dùng được cho codemod, CI gate, dashboard coverage, hoặc rule riêng của team sản phẩm.
+
+### Canonical Output
+
+Khi helper sinh token `x-css`, nên coi các output dưới đây là canonical:
+1. `inline-flex -> dIf`
+2. `inline-block -> dIb`
+3. `inline-grid -> dIg`
+4. `border -> bdw1px bds[solid] bdcCurrentColor`
+5. `text-transparent -> cTransparent`
+6. `border-transparent -> bdcTransparent`
+7. `bg-[currentColor] -> bgcCurrentColor`
+
+Không nên dựa vào việc runtime parser “vẫn hiểu được” để sinh các biến thể khác như `dIF`, `dIB`, `bdctransparent`.
+
+### Coverage Hiện Tại
+
+Nhóm utility đã hỗ trợ tốt:
+1. display / position / flex cơ bản
+2. spacing / size / fraction / width scale / `mx-auto` / `inset-x-*` / `inset-y-*`
+3. color cơ bản (`bg-*`, `text-*`, `border-*`)
+4. rounded / border / shadow / `appearance-none`
+5. font-size / font-weight / line-height / letter-spacing / `basis-*` / `order-*`
+6. object-fit / object-position cơ bản
+7. align / place / justify / content helpers phổ biến
+8. một phần responsive + selector variants (`sm`, `md`, `hover`, `focus`, `before`, `after`, `placeholder`, `selection`)
+
+Nhóm nên coi là cần review thủ công hoặc fallback riêng:
+1. `group-hover:*`, `group-focus:*`, `peer-*`
+2. `dark:*`
+3. `divide-*`
+4. `duration-*`, `ease-*`, `delay-*`
+5. transform chain phức hợp như `translate-*`, `scale-*`, `rotate-*`
+
+### Quy Trình Dùng An Toàn
+
+Khi migrate project thật:
+1. Chạy converter với `mode: 'safe'`.
+2. Áp dụng trực tiếp các token trong `converted`.
+3. Giữ nguyên các token trong `passthrough` chỉ khi chúng là `x-css` thật.
+4. Review bắt buộc các token trong `ambiguous` và `unsupported`.
+5. Chạy lại app, build, và kiểm tra giao diện thực tế sau mỗi đợt chuyển đổi.
+
+Khuyến nghị:
+1. Không chạy codemod toàn repo ở `legacy mode` rồi deploy thẳng.
+2. Không dùng parser `x-css` như bằng chứng rằng token Tailwind “đã an toàn”.
+3. Nếu output chứa nhiều `ambiguous`, hãy dừng batch hiện tại và bổ sung mapping trước khi chuyển tiếp.
+
 Alias tương đương:
 
 ```ts
 import { createSharedClsx } from '@fwkui/x-css';
-const fx = createSharedClsx({ prefix: 'fk-' });
+const fx = createSharedClsx();
 ```
 
 Quy tắc dùng ổn định:
 1. Tạo shared instance đúng 1 lần ở bootstrap.
 2. Không khởi tạo lại instance ở mỗi lần render component.
-3. Giữ nguyên `prefix/cache` trong suốt vòng đời app để key hash ổn định.
+3. Mặc định để `prefix` rỗng và `cache` tắt.
+4. Nếu bạn tự bật `cache` hoặc `prefix`, giữ nguyên cấu hình đó trong suốt vòng đời app.
 
 ## Cấu Hình
 
@@ -307,26 +510,18 @@ xcss.cssObserve(document, {
     { tablet: 'screen and (min-width: 768px)' }
   ],
   base: 'body{margin:0;font-family:system-ui,sans-serif;}',
-  prefix: 'fk-',
   excludePrefixes: ['bs-', 'rs-'],
   excludes: ['legacy-*'],
-  dictionaryImport: true,
-  cache: {
-    styleId: 'fwkui',
-    version: 'v1',
-    compression: true,
-    debounceMs: 1000,
-    loadOnInit: true
-  }
+  dictionaryImport: true
 });
 ```
 
-Sau đó dùng class: `fk-cBrand fk-tablet:dB`.
+Sau đó dùng class: `cBrand tablet:dB`.
 
 Gợi ý tối ưu bỏ qua parse:
-1. Dùng `prefix` nếu bạn kiểm soát được class framework (nhanh và sạch nhất).
-2. Dùng `excludePrefixes` để bỏ qua nhanh theo tiền tố, ví dụ `bs-`, `rs-`.
-3. Dùng `excludes` khi cần rule chính xác hoặc wildcard (`*`), ví dụ `legacy-*`, `tmp-debug`.
+1. Ưu tiên `excludePrefixes` để bỏ qua nhanh theo tiền tố, ví dụ `bs-`, `rs-`.
+2. Dùng `excludes` khi cần rule chính xác hoặc wildcard (`*`), ví dụ `legacy-*`, `tmp-debug`.
+3. Không nên lấy `prefix` làm cấu hình mặc định; chỉ dùng khi bạn thật sự cần tách namespace class.
 
 Ví dụ đầu vào cho `excludes`:
 
@@ -356,6 +551,7 @@ Lưu ý khi dùng cùng `prefix`:
 1. Engine kiểm tra `excludes`/`excludePrefixes` trước, sau đó mới kiểm tra `prefix`.
 2. Nếu token match exclude thì giữ nguyên class gốc và không parse tiếp.
 3. Nếu có `prefix: 'fk-'`, token không bắt đầu bằng `fk-` sẽ giữ nguyên class gốc.
+4. `prefix` là cấu hình tùy chọn, không phải khuyến nghị mặc định.
 
 
 `dictionaryImport`:
@@ -369,11 +565,18 @@ Lưu ý:
 3. Nếu cần chắc chắn dictionary ngoài đã sẵn sàng trước khi render quan trọng, dùng `await engine.ready`.
 
 `cache`:
-1. `styleId` (mặc định `fwkui`): id thẻ `<style>` runtime.
-2. `version` (mặc định `v1`): tham gia vào cache key để chủ động invalidate.
-3. `compression` (mặc định `true`): nén cache trước khi lưu `localStorage`.
-4. `debounceMs` (mặc định `1000`): debounce chu kỳ nén + lưu cache.
-5. `sizeLast` (mặc định `1000`): seed mặc định cho bộ sinh key `D...`.
+1. Mặc định `cache` đang tắt (`loadOnInit: false`).
+2. `styleId` (mặc định `fwkui`): id thẻ `<style>` runtime.
+3. `version` (mặc định `v1`): tham gia vào cache key để chủ động invalidate.
+4. `compression` (mặc định `true`): nén cache trước khi lưu `localStorage`.
+5. `debounceMs` (mặc định `1000`): debounce chu kỳ nén + lưu cache.
+6. `sizeLast` (mặc định `1000`): seed mặc định cho bộ sinh key `D...`.
+
+Khuyến nghị:
+1. Không bật `cache` mặc định cho mọi app.
+2. Không bật/tắt `cache` lặp lại theo route, component, hoặc session ngắn.
+3. Chỉ bật `cache` khi bạn chủ động muốn tối ưu first paint hoặc SSR/MPA hydration.
+4. Nếu đã bật `cache`, hãy cấu hình ổn định và giữ nguyên trong toàn app.
 
 Khi `compression: true`:
 1. Ưu tiên `CompressionStream` (deflate-raw + base64) nếu runtime hỗ trợ.
@@ -463,9 +666,9 @@ Quy trình thay link:
 3. Thay `dictionaryImport` bằng URL thật.
 4. Chờ `await engine.ready` trước khi render class.
 
-## Bootloader Từ Cache (Khuyến nghị)
+## Bootloader Từ Cache (Tùy Chọn)
 
-Khuyến nghị dùng helper `getBootloaderScript` để chèn script vào `<head>` trước bundle/module, giúp giảm FOUC khi đã có cache CSS.
+Chỉ dùng helper `getBootloaderScript` khi bạn chủ động bật `cache` và muốn lấy CSS từ `localStorage` trước khi bundle chạy.
 
 ### Dùng helper `getBootloaderScript`
 
@@ -536,10 +739,10 @@ Lưu ý:
 1. Đồng bộ `styleId` + `version` giữa bootloader và cấu hình `xcss.css(...)`.
 2. Script tạo từ `getBootloaderScript` ưu tiên `DecompressionStream` (cache deflate-raw) và fallback LZW.
 3. Sau bootloader vẫn cần gọi `xcss.cssObserve(...)` như bình thường.
-4. Mặc định `loadOnInit` đang bật; muốn tắt hẳn load/save cache thì truyền `{ loadOnInit: false }`.
+4. Mặc định `loadOnInit` đang tắt; chỉ bật bằng `{ loadOnInit: true }` khi bạn thật sự dùng cache runtime.
 5. Dùng `{ compact: true }` khi muốn script trả về ở dạng nén gọn để nhúng HTML.
 6. Nếu dữ liệu cache dưới key hiện tại bị lỗi/không decode được, engine sẽ tự xóa key đó để lần chạy sau lưu lại dữ liệu mới.
-7. Cache runtime chỉ khởi tạo khi browser dùng được cả `localStorage` writable và `Web Locks`; thiếu một trong hai thì engine/bootloader sẽ bỏ qua load-save cache.
+7. Cache runtime chỉ khởi tạo khi browser dùng được `localStorage` writable; nếu không có thì engine/bootloader sẽ bỏ qua load-save cache.
 
 ### Khi nào nên dùng `getBootloaderScript`
 
