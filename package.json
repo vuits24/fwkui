@@ -1,6 +1,6 @@
 {
   "name": "@fwkui/x-css",
-  "version": "1.0.23",
+  "version": "1.0.24",
   "description": "A fast, modular CSS-in-JS library with utility-first approach and static extraction support.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -30,12 +30,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dwork-dev/fwkui.git"
+    "url": "git+https://github.com/vuits24/fwkui.git"
   },
   "bugs": {
-    "url": "https://github.com/dwork-dev/fwkui/issues"
+    "url": "https://github.com/vuits24/fwkui/issues"
   },
-  "homepage": "https://github.com/dwork-dev/fwkui#readme",
+  "homepage": "https://github.com/vuits24/fwkui#readme",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@vitest/coverage-v8": "^4.0.18",
