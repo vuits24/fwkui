@@ -1,0 +1,33 @@
+[package]
+name = "fwkui-x-css"
+version = "0.1.0"
+description = "Framework-facing Rust facade for fwkui x-css."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "fwkui_x_css"
+path = "src/lib.rs"
+
+[features]
+default = []
+dom = ["dep:wasm-bindgen", "dep:web-sys"]
+yew = []
+leptos = []
+sycamore = []
+
+[dependencies]
+fwkui-x-core = { path = "../x-core", version = "0.1.0" }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Document",
+    "Element",
+    "HtmlCollection",
+    "HtmlElement",
+    "Node",
+    "NodeList",
+    "Window",
+] }

@@ -15,6 +15,7 @@ export type XCSSConfig = {
     breakpoints?: Record<string, string>[]
     theme?: Record<string, string>
     prefix?: string
+    hashClassName?: boolean
     dictionaryImport?: boolean | string
     cache?: {
         styleId?: string
@@ -836,6 +837,7 @@ const hashConfig = (config: XCSSConfig): string => {
         breakpoints: config.breakpoints || [],
         theme: config.theme || {},
         prefix: config.prefix || '',
+        hashClassName: config.hashClassName ?? true,
         excludes,
         excludePrefixes: config.excludePrefixes || [],
         dictionaryImport: config.dictionaryImport ?? true,
@@ -932,6 +934,7 @@ export const xcss = (
         breakpoints: [],
         theme: {},
         prefix: '',
+        hashClassName: true,
         dictionaryImport: true,
         cache: {
             styleId: 'fwkui',
@@ -952,6 +955,7 @@ export const xcss = (
         excludes: excludeNames = [],
         excludePrefixes = [],
         prefix = '',
+        hashClassName = true,
         dictionaryImport = true,
         cache: cacheOptions = {},
     } = modules || {}
@@ -961,6 +965,7 @@ export const xcss = (
     if (!Array.isArray(excludePrefixes)) excludePrefixes = []
     if (!groupValues || typeof groupValues !== 'object') groupValues = {}
     if (!valueExt || typeof valueExt !== 'object') valueExt = {}
+    const shouldHashOutputClassName = hashClassName !== false
 
     const cacheConfig = resolveCacheConfig(cacheOptions)
     const cacheKey = createCacheKey(cacheConfig)
@@ -1103,7 +1108,8 @@ export const xcss = (
             CSS_VALUES.add(value)
         }
 
-        const resolveSourceClassName = (value: string): string => CSS_KEY_SOURCES.get(value) || value
+        const resolveSourceClassName = (value: string): string =>
+            shouldHashOutputClassName ? CSS_KEY_SOURCES.get(value) || value : value
         const keyRegistryKey = createKeyRegistryKey(cacheConfig)
         const keyRegistryLockName = createKeyRegistryLockName(cacheConfig)
         let sizeLast = cacheConfig.sizeLast;
@@ -1670,7 +1676,7 @@ export const xcss = (
             let cssTextStore = cssStyleSheetsText
 
             layer = Number(layer) || 0
-            let cssExts = CSS_KEYS.get(txtCls)
+            let cssExts = shouldHashOutputClassName ? CSS_KEYS.get(txtCls) : null
             let cssName = cssExts
                 ? `.${cssExts}${selector}`
                 : `.${className}${selector}`
@@ -1762,12 +1768,14 @@ export const xcss = (
             let lsClassNew = lsCss.map((l: string) => {
                 let item = l
                 if (CSS_KEYS.has(l)) {
-                    item = CSS_KEYS.get(l)!
+                    item = shouldHashOutputClassName ? CSS_KEYS.get(l)! : l
                 } else {
                     // Chỉ hash class name nếu có thể sinh CSS hợp lệ.
                     // Token không hợp lệ (ví dụ "bs-a") giữ nguyên.
                     if (shouldHashClass(l)) {
-                        if (cacheEnabled && isBrowser) {
+                        if (!shouldHashOutputClassName) {
+                            item = l
+                        } else if (cacheEnabled && isBrowser) {
                             item = allocatePersistentKeySync(l)
                         } else {
                             const key = allocateLocalKey(l)

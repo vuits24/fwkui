@@ -1,0 +1,12 @@
+[package]
+name = "fwkui-xcss-leptos-hash-complete"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+fwkui-x-css = { path = "../../x-css" }
+leptos = { version = "0.8.19", features = ["csr"] }
+leptos_router = "0.8.13"

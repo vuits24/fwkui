@@ -117,6 +117,46 @@ describe('xcss rule matrix', () => {
         expect(css).not.toContain('width:10px')
     })
 
+    it('should keep valid xcss class names raw when hashClassName is disabled', async () => {
+        const instance = xcss({
+            hashClassName: false,
+            breakpoints: [{ tablet: 'screen and (min-width: 900px)' }],
+        })
+        const { clsx, getCssString } = instance.buildCss()
+
+        expect(clsx('m10px dF@:hover tablet:p8px')).toBe('m10px dF@:hover tablet:p8px')
+        expect(clsx('unknown10')).toBe('unknown10')
+
+        await instance.ready
+        await Promise.resolve()
+
+        const css = getCssString()
+        expect(css).toContain('.m10px{margin:10px}')
+        expect(css).toContain('.dF\\@\\:hover:hover{display:flex}')
+        expect(css).toContain('@media screen and (min-width: 900px)')
+        expect(css).toContain('.tablet\\:p8px{padding:8px}')
+        expect(css).not.toContain('.D')
+        expect(css).not.toContain('unknown:10')
+    })
+
+    it('should preserve prefixed class names when hashClassName is disabled', async () => {
+        const instance = xcss({
+            prefix: 'fk-',
+            hashClassName: false,
+        })
+        const { clsx, getCssString } = instance.buildCss()
+
+        expect(clsx('m10px fk-m10px fk-cRed')).toBe('m10px fk-m10px fk-cRed')
+
+        await instance.ready
+        await Promise.resolve()
+
+        const css = getCssString()
+        expect(css).toContain('.fk-m10px{margin:10px}')
+        expect(css).toContain('.fk-cRed{color:Red}')
+        expect(css).not.toContain('.m10px{margin:10px}')
+    })
+
     it('should create shared instance with stable key mapping and initial config', async () => {
         const shared = createSharedInstance({ prefix: 'fk-' })
 

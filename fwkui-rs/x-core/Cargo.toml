@@ -1,0 +1,16 @@
+[package]
+name = "fwkui-x-core"
+version = "0.1.0"
+description = "Rust core parser and CSS generator for fwkui x-css."
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "fwkui_x_core"
+path = "src/lib.rs"
+
+[dependencies]
+

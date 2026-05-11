@@ -1,0 +1,14 @@
+[workspace]
+members = [
+    "x-core",
+    "x-css",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/vuits24/fwkui"
+homepage = "https://github.com/vuits24/fwkui#readme"
+rust-version = "1.74"
+

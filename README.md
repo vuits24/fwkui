@@ -207,7 +207,7 @@ Một số alias dễ nhầm:
 Ví dụ:
 
 ```html
-<div class="dF aiC jcSB p12px;16px bdN bgcWhite"></div>
+<div class="dF aiC jcSp p12px;16px bdN bgcWhite"></div>
 <div class="tran0.2s opc0.8@:hover"></div>
 <div class="c!#0a64e8"></div>
 <div class="w[calc(100%;-;10px)]"></div>
@@ -256,7 +256,8 @@ Nếu bạn muốn tái sử dụng cùng một instance, dùng factory.
 Khuyến nghị mặc định cho app chạy thật:
 1. Không đặt `prefix`.
 2. Không bật `cache`.
-3. Chỉ bật `cache` hoặc `prefix` khi bạn chủ động chấp nhận tradeoff vận hành.
+3. Giữ `hashClassName` mặc định nếu muốn class output ngắn và ổn định.
+4. Chỉ bật `cache`, `prefix`, hoặc tắt `hashClassName` khi bạn chủ động chấp nhận tradeoff vận hành.
 
 ```ts
 import { createSharedInstance } from '@fwkui/x-css';
@@ -274,6 +275,58 @@ await fx.ready();
 
 // SSR / debug
 const cssText = fx.getCss();
+```
+
+## Tắt Hash Class Name
+
+Mặc định `clsx` trả về class đã rút gọn dạng `D...`.
+Nếu muốn giữ nguyên class x-css ở output, đặt `hashClassName: false`.
+
+```ts
+import xcss from '@fwkui/x-css';
+
+const { clsx, getCssString } = xcss.css({
+  hashClassName: false
+}).buildCss();
+
+const className = clsx('dF aiC jcC p10px;16px bgc#0a64e8 cWhite');
+// className = 'dF aiC jcC p10px;16px bgc#0a64e8 cWhite'
+
+const css = getCssString();
+// CSS selector vẫn được escape đúng cho ký tự như :, %, [, ], @.
+```
+
+Lưu ý:
+1. `hashClassName: false` chỉ đổi output class name, không tắt parser/generator.
+2. Token không hợp lệ hoặc bị `excludes`/`excludePrefixes` vẫn giữ nguyên như trước.
+3. Khi dùng `prefix: 'fk-'`, output sẽ giữ nguyên `fk-m10px`, còn token không có prefix vẫn không parse.
+
+## Rust / fwkui-rs
+
+Repo có workspace Rust tại `fwkui-rs/` gồm `fwkui-x-core` và `fwkui-x-css`.
+Mặc định Rust cũng hash class name dạng `D...`; dùng `XCss::raw()` nếu muốn giữ nguyên token.
+
+```rust
+use fwkui_x_css::XCss;
+
+let xcss = XCss::new();
+
+view! {
+  <button class=xcss.c("dF aiC jcC p10px;16px bgc--brand cWhite")>
+    "Đăng nhập"
+  </button>
+  <style>{xcss.style()}</style>
+}
+```
+
+Với Yew/Leptos, ưu tiên viết trực tiếp `class=xcss.c("...")` và đặt `<style>{xcss.style()}</style>` sau các node đã dùng class.
+Với Leptos Router hoặc nhiều route, truyền clone cùng một `XCss` vào từng route; mỗi route đặt style node ở cuối route đó. Không cần tạo danh sách seed class riêng.
+
+Ví dụ runnable:
+
+```bash
+cd fwkui-rs/examples/leptos-hash-complete
+NO_COLOR=false trunk serve
 ```
 
 ## Tailwind Migration Helper

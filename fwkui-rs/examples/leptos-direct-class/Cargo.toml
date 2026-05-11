@@ -1,0 +1,11 @@
+[package]
+name = "fwkui-xcss-leptos-direct-class"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+fwkui-x-css = { path = "../../x-css", features = ["dom"] }
+leptos = { version = "0.8.19", features = ["csr"] }
